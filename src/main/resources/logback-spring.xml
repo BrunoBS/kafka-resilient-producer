@@ -1,0 +1,46 @@
+<configuration>
+    <!-- 1. Silencia mensagens de status do próprio Logback no startup -->
+    <statusListener class="ch.qos.logback.core.status.NopStatusListener" />
+
+    <springProperty scope="context" name="serviceName" source="spring.application.name"/>
+
+    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp><fieldName>timestamp</fieldName></timestamp>
+                <logLevel><fieldName>level</fieldName></logLevel>
+                <threadName><fieldName>thread</fieldName></threadName>
+                <loggerName><fieldName>logger</fieldName></loggerName>
+                <message/>
+                <pattern>
+                    <pattern>
+                        { "service": "${serviceName:-unknown-service}" }
+                    </pattern>
+                </pattern>
+                <stackTrace/>
+                <mdc><fieldName>context</fieldName></mdc>
+            </providers>
+        </encoder>
+    </appender>
+
+    <!-- 2. Silenciamento Agressivo de Infraestrutura -->
+    <logger name="org.springframework" level="ERROR" />
+    <logger name="org.hibernate" level="ERROR" />
+    <logger name="org.hibernate.orm.deprecation" level="OFF" />
+    <logger name="com.zaxxer.hikari" level="ERROR" />
+    <logger name="org.apache.catalina" level="ERROR" />
+    <logger name="org.apache.coyote" level="ERROR" />
+    <logger name="org.hibernate.validator" level="ERROR" />
+
+    <!-- 3. SILENCIAR KAFKA (Onde morrem os logs de 'Node disconnected') -->
+    <logger name="org.apache.kafka" level="ERROR" />
+    <logger name="org.apache.kafka.clients.NetworkClient" level="OFF" />
+    <logger name="org.apache.kafka.clients.Metadata" level="OFF" />
+
+    <!-- 4. Seu código de negócio (Removido o '*' que causa erro de parse) -->
+    <logger name="com.example.kafka" level="INFO" />
+
+    <root level="INFO">
+        <appender-ref ref="JSON_CONSOLE"/>
+    </root>
+</configuration>

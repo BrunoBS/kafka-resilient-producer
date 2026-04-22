@@ -1,0 +1,41 @@
+server:
+  shutdown: graceful
+  port: 6060
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 30s # Dá 30 segundos para as threads limparem a fila
+  application:
+    name: account-service-v1
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: 6379
+  cache:
+    type: redis
+    redis:
+
+      time-to-live: 60m
+      cache-null-values: false
+      key-prefix: "kafka-app::"
+      use-key-prefix: true
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/app_db?rewriteBatchedStatements=true&useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true}
+    username: ${DB_USER:app_user}
+    password: ${DB_PASS:app_pass}
+    hikari:
+      maximum-pool-size: 50 # Aumente para suportar as 20-50 threads do JMeter
+      minimum-idle: 10
+      idle-timeout: 30000
+      connection-timeout: 10000
+      leak-detection-threshold: 5000
+      pool-name: KafkaResiliencePool
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        jdbc.batch_size: 50
+        order_inserts: true
