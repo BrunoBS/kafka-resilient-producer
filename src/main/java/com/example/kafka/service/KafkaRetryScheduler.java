@@ -74,7 +74,7 @@ public class KafkaRetryScheduler {
     }
 
     private void processEnvBatch(String environment) {
-        log.info("[OO] Processando ambiente: {}", environment);
+        log.info("[SCHEDULER] Processando ambiente: {}", environment);
         boolean hasMore = true;
         while (hasMore) {
             List<LocalBuffer> batch = repository.findOldestPending(environment, LocalDateTime.now(), PageRequest.of(0, BATCH_SIZE));
