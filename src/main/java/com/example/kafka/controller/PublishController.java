@@ -38,11 +38,12 @@ public class PublishController {
                     /          \
                    /            \
         sucesso   /        erro  \
-                 │                │
+                  │               │
                  ▼                ▼
-             PUBLISHED           ERROR
+              ┌─────────────┐ ┌─────────────┐
+              │ PUBLISHED   │ │    ERRO     │
+              └─────────────┘ └─────────────┘
 
-             P
         */
 
 
