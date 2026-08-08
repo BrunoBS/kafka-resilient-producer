@@ -5,131 +5,227 @@ import com.example.kafka.repository.KafkaClusterPropertyRepository;
 import com.example.kafka.repository.KafkaTopicConfigRepository;
 import com.example.kafka.repository.LocalBufferRepository;
 import com.fasterxml.jackson.databind.JsonNode;
-import jakarta.transaction.Transactional;
-import org.apache.kafka.clients.producer.ProducerRecord;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Map;
 
 @Component
 public class KafkaRetryScheduler {
-    private static final Logger log = LoggerFactory.getLogger(KafkaRetryScheduler.class);
-    private final AtomicBoolean isRunning = new AtomicBoolean(false);
+
+    private static final Logger log =
+            LoggerFactory.getLogger(KafkaRetryScheduler.class);
+
+    private static final int BATCH_SIZE = 100;
+    private static final int DEFAULT_MAX_RETRY = 5;
+    private static final int INITIAL_BACKOFF_SECONDS = 120;
+    private static final int MAX_BACKOFF_SECONDS = 3600;
+
     private final LocalBufferRepository repository;
+    private final LocalBufferService localBufferService;
+    private final KafkaMessagePublisher publisher;
     private final KafkaClusterPropertyRepository kafkaClusterPropertyRepository;
     private final KafkaTopicConfigRepository kafkaTopicConfigRepository;
-    private final KafkaProducerRegistry registry;
-    private static final int BATCH_SIZE = 100;
 
-    public KafkaRetryScheduler(LocalBufferRepository repository,
-                               KafkaClusterPropertyRepository kafkaClusterPropertyRepository,
-                               KafkaTopicConfigRepository kafkaTopicConfigRepository,
-                               KafkaProducerRegistry registry) {
+    public KafkaRetryScheduler(
+            LocalBufferRepository repository,
+            LocalBufferService localBufferService,
+            KafkaMessagePublisher publisher,
+            KafkaClusterPropertyRepository kafkaClusterPropertyRepository,
+            KafkaTopicConfigRepository kafkaTopicConfigRepository) {
+
         this.repository = repository;
-        this.kafkaClusterPropertyRepository = kafkaClusterPropertyRepository;
-        this.kafkaTopicConfigRepository = kafkaTopicConfigRepository;
-        this.registry = registry;
+        this.localBufferService = localBufferService;
+        this.publisher = publisher;
+        this.kafkaClusterPropertyRepository =
+                kafkaClusterPropertyRepository;
+        this.kafkaTopicConfigRepository =
+                kafkaTopicConfigRepository;
     }
+
 
     @Scheduled(cron = "0 0 5 * * *")
+    @SchedulerLock(name = "kafka-cleanup", lockAtMostFor = "PT10M")
     @Transactional
     public void purgeOldMessages() {
-        log.info("[CLEANUP] Iniciando limpeza de mensagens mortas...");
+
+        log.info("[CLEANUP] Iniciando limpeza de mensagens antigas...");
+
         LocalDateTime thresholdError = LocalDateTime.now().minusDays(3);
         repository.deleteExpiredErrors("ERROR", thresholdError);
+
         LocalDateTime thresholdOld = LocalDateTime.now().minusDays(7);
         repository.deleteVeryOld(thresholdOld);
-        log.info("[CLEANUP] Concluído.");
+
+        log.info("[CLEANUP] Limpeza concluída."
+        );
     }
 
-    // Executa a cada minuto no segudo 0
-    @Scheduled(cron = "0 * * * * *")
-    public void processInStrictOrder() {
-        if (!isRunning.compareAndSet(false, true)) return;
-        try {
-            log.info("[SCHEDULER] Iniciando ciclo de reprocessamento autônomo...");
-            List<String> environments = kafkaClusterPropertyRepository.findAllEnvironments();
-            for (String env : environments) {
 
-                if (registry.isHealthy(env)) {
-                    repository.fastTrackByEnv(env, LocalDateTime.now());
-                    processEnvBatch(env);
-                } else {
-                    log.warn("[SCHEDULER-NOT-HEALTHY] Ambiente {} ainda offline. Pulando para o próximo ambiente.", env);
-                }
+    @Scheduled(cron = "0 * * * * *")
+    @SchedulerLock(
+            name = "kafka-retry-scheduler",
+            lockAtMostFor = "PT5M"
+    )
+    public void processInStrictOrder() {
+
+        long start = System.currentTimeMillis();
+        log.info("[SCHEDULER] Iniciando ciclo de retry.");
+        Map<String, Integer> maxRetryCache = new HashMap<>();
+        try {
+            List<String> environments = kafkaClusterPropertyRepository.findAllEnvironments();
+            for (String environment : environments) {
+                processEnvironment(environment, maxRetryCache);
             }
         } catch (Exception e) {
-            log.error("[SCHEDULER-ERROR-CRITICAL] Erro no ciclo do Scheduler: {}", e.getMessage(), e);
+            log.error("[SCHEDULER-ERROR] Erro no ciclo de retry: {}", e.getMessage(), e);
+
         } finally {
-            isRunning.set(false);
+            log.info("[SCHEDULER] Ciclo finalizado em {} ms. Configurações em cache={}",
+                    System.currentTimeMillis() - start,
+                    maxRetryCache.size()
+            );
         }
     }
 
-    private void processEnvBatch(String environment) {
-        log.info("[SCHEDULER] Processando ambiente: {}", environment);
-        boolean hasMore = true;
-        while (hasMore) {
-            List<LocalBuffer> batch = repository.findOldestPending(environment, LocalDateTime.now(), PageRequest.of(0, BATCH_SIZE));
+    private void processEnvironment(String environment, Map<String, Integer> maxRetryCache) {
+
+        if (!publisher.isHealthy(environment)) {
+            log.warn("[SCHEDULER] Ambiente {} está offline.", environment);
+            return;
+        }
+        repository.fastTrackByEnv(environment, LocalDateTime.now());
+        processEnvBatch(environment, maxRetryCache);
+    }
+
+    private void processEnvBatch(String environment, Map<String, Integer> maxRetryCache) {
+
+        while (true) {
+            List<LocalBuffer> batch = repository.findOldestPending(
+                    environment,
+                    LocalDateTime.now(),
+                    PageRequest.of(0, BATCH_SIZE)
+            );
+
             if (batch.isEmpty()) {
-                hasMore = false;
-                continue;
+                return;
             }
+
+            log.info("[SCHEDULER] Processando {} mensagens do ambiente {}.", batch.size(), environment);
 
             for (LocalBuffer message : batch) {
                 try {
-                    var producer = registry.get(environment);
-                    RecordMetadata metadata = producer
-                            .send(new ProducerRecord<>(message.getTopic(), message.getKey(), message.getMessage()))
-                            .get(3, TimeUnit.SECONDS);
-                    log.info("[KAFKA-SUCCESS] Mensagem salva no tópico {} partição {} offset {}",
-                            metadata.topic(), metadata.partition(), metadata.offset());
-
-                    repository.delete(message);
-
+                    publishMessage(message);
                 } catch (Exception e) {
-                    log.error("[BATCH-FAILURE] Falha ao reenviar mensagem {}: {}", message.getId(), e.getMessage());
-                    handleFailure(message, e.getMessage(), fetchMaxRetry(message));
-                    hasMore = false;
-                    break;
+                    log.error("[RETRY-FAILURE] Falha na mensagem {}: {}", message.getId(), e.getMessage());
+                    int maxRetry = fetchMaxRetry(message, maxRetryCache);
+                    handleFailure(message, e.getMessage(), maxRetry);
+                    return;
                 }
             }
-            if (batch.size() < BATCH_SIZE) hasMore = false;
+
+            if (batch.size() < BATCH_SIZE) {
+                return;
+            }
         }
     }
 
-    private int fetchMaxRetry(LocalBuffer message) {
-        return kafkaTopicConfigRepository.findByEnvironmentAndTopic(message.getEnvironment(), message.getTopic())
-                .stream().findFirst()
-                .map(config -> {
-                    JsonNode params = config.getParametros();
-                    return (params != null && params.has("max.retry.attempts")) ? params.get("max.retry.attempts").asInt() : 5;
-                }).orElse(5);
+    private void publishMessage(LocalBuffer message) throws Exception {
+
+        RecordMetadata metadata = publisher.publish(
+                message.getEventId(),
+                message.getEnvironment(),
+                message.getTopic(),
+                message.getKey(),
+                message.getMessage()
+        );
+
+
+        log.info("[KAFKA-SUCCESS] eventId={}, topic={}, partition={}, offset={}, key={},  environment={}",
+                message.getEventId(),
+                metadata.topic(),
+                metadata.partition(),
+                metadata.offset(),
+                message.getKey(),
+                message.getEnvironment()
+        );
+
+        localBufferService.delete(message.getId());
     }
 
-    private void handleFailure(LocalBuffer b, String err, int max) {
-        int nextAttempt = b.getRetryCount() + 1;
-        b.setRetryCount(nextAttempt);
-        b.setLastError(err);
+
+    private int fetchMaxRetry(LocalBuffer message, Map<String, Integer> cache) {
+        String cacheKey = message.getEnvironment().concat("|").concat(message.getTopic());
+        if (cache.containsKey(cacheKey)) {
+            return cache.get(cacheKey);
+        }
+        int maxRetry = loadMaxRetryFromDatabase(message);
+        cache.put(cacheKey, maxRetry);
+        return maxRetry;
+    }
+
+    private int loadMaxRetryFromDatabase(
+            LocalBuffer message) {
+
+        return kafkaTopicConfigRepository
+                .findByEnvironmentAndTopic(
+                        message.getEnvironment(),
+                        message.getTopic()
+                )
+                .stream()
+                .findFirst()
+                .map(config -> {
+
+                    JsonNode params =
+                            config.getParametros();
+
+                    if (params != null
+                            && params.has(
+                            "max.retry.attempts")) {
+
+                        return params
+                                .get("max.retry.attempts")
+                                .asInt();
+                    }
+
+                    return DEFAULT_MAX_RETRY;
+                })
+                .orElse(DEFAULT_MAX_RETRY);
+    }
 
 
-        long secondsToWait = (long) (120 * Math.pow(2, nextAttempt - 1));
-        secondsToWait = Math.min(secondsToWait, 3600); // Máximo 1 hora
+    private void handleFailure(LocalBuffer message, String error, int maxRetry) {
+        int nextAttempt = message.getRetryCount() + 1;
+        message.setRetryCount(nextAttempt);
+        message.setLastError(error);
+        long secondsToWait = (long) (INITIAL_BACKOFF_SECONDS * Math.pow(2, nextAttempt - 1));
+        secondsToWait = Math.min(secondsToWait, MAX_BACKOFF_SECONDS);
+        message.setNextRetry(LocalDateTime.now().plusSeconds(secondsToWait));
 
-        b.setNextRetry(LocalDateTime.now().plusSeconds(secondsToWait));
-        b.setStatus(nextAttempt >= max ? "ERROR" : "FAILED_RETRY");
+        if (nextAttempt >= maxRetry) {
+            message.setStatus("ERROR");
+        } else {
+            message.setStatus("FAILED_RETRY");
+        }
 
-        repository.save(b);
-        System.out.printf("[BACKOFF] Mensagem %d falhou (%d/%d). Próxima tentativa em %d segundos.%n",
-                b.getId(), nextAttempt, max, secondsToWait);
-
-        log.warn("[BACKOFF] Mensagem {} agendada para daqui a {}s.", b.getId(), secondsToWait);
+        repository.save(message);
+        log.warn(
+                "[BACKOFF] id={} eventId={} attempt={}/{} status={} nextRetry={} ",
+                message.getId(),
+                message.getEventId(),
+                nextAttempt,
+                maxRetry,
+                message.getStatus(),
+                message.getNextRetry()
+        );
     }
 }

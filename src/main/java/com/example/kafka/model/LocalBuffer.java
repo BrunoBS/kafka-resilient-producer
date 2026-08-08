@@ -8,9 +8,12 @@ import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "local_buffer", indexes = {
-        @Index(name = "idx_buffer_lookup", columnList = "environment, status, nextRetry, createdAt")
-})
+@Table(
+        name = "local_buffer",
+        indexes = {@Index(name = "idx_buffer_lookup", columnList = "environment, status, nextRetry, createdAt"),
+                @Index(name = "idx_buffer_event_id", columnList = "eventId")
+        }
+)
 @EntityListeners(AuditingEntityListener.class)
 public class LocalBuffer {
 
@@ -18,33 +21,46 @@ public class LocalBuffer {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column()
+    @Column(name = "event_id", nullable = false, unique = true, length = 100)
+    private String eventId;
+
+    @Column(nullable = false, length = 50)
     private String environment;
 
-    @Column()
+    @Column(nullable = false)
     private String topic;
+
 
     @Column(name = "kafka_key")
     private String key;
 
-    @Column(name = "kafka_message", columnDefinition = "TEXT")
+
+    @Column(name = "kafka_message", columnDefinition = "TEXT", nullable = false)
     private String message;
 
+    @Column(name = "retry_count", nullable = false)
     private int retryCount = 0;
+
+
+    @Column(nullable = false, length = 30)
     private String status = "PENDING";
 
+    @Column(name = "next_retry", nullable = false)
     private LocalDateTime nextRetry = LocalDateTime.now();
 
-    @Column(name = "last_error", columnDefinition = "LONGTEXT") // Ou "LONGTEXT" se quiser stacktraces gigantes
+
+    @Column(name = "last_error", columnDefinition = "LONGTEXT")
     private String lastError;
 
-
     @CreatedDate
-    @Column(updatable = false)
+    @Column(name = "created_at", nullable = false, updatable = false
+    )
     private LocalDateTime createdAt;
 
     @LastModifiedDate
+    @Column(name = "updated_at")
     private LocalDateTime updatedAt;
+
 
     public Long getId() {
         return id;
@@ -52,6 +68,14 @@ public class LocalBuffer {
 
     public void setId(Long id) {
         this.id = id;
+    }
+
+    public String getEventId() {
+        return eventId;
+    }
+
+    public void setEventId(String eventId) {
+        this.eventId = eventId;
     }
 
     public String getEnvironment() {
@@ -68,6 +92,14 @@ public class LocalBuffer {
 
     public void setTopic(String topic) {
         this.topic = topic;
+    }
+
+    public String getKey() {
+        return key;
+    }
+
+    public void setKey(String key) {
+        this.key = key;
     }
 
     public String getMessage() {
@@ -124,13 +156,5 @@ public class LocalBuffer {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
-    }
-
-    public String getKey() {
-        return key;
-    }
-
-    public void setKey(String key) {
-        this.key = key;
     }
 }

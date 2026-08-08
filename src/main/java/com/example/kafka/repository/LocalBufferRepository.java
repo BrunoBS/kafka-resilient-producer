@@ -44,7 +44,7 @@ public interface LocalBufferRepository extends JpaRepository<LocalBuffer, Long> 
     @Transactional
     @Query("UPDATE LocalBuffer b SET b.status = :newStatus, b.retryCount = :retryCount, b.nextRetry = :nextRetry " +
             "WHERE b.environment = :environment AND b.status = 'ERROR'")
-    void resetStatusByEnv(@Param("environment") String environment,
+    int resetStatusByEnv(@Param("environment") String environment,
                           @Param("newStatus") String newStatus,
                           @Param("retryCount") int retryCount,
                           @Param("nextRetry") LocalDateTime nextRetry);

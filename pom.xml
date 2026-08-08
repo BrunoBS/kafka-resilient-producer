@@ -18,8 +18,8 @@
     </parent>
 
     <properties>
-        <!-- Java 25 -->
         <java.version>25</java.version>
+        <shedlock.version>7.6.0</shedlock.version>
     </properties>
 
     <dependencies>
@@ -71,7 +71,19 @@
             <artifactId>spring-boot-starter-aop</artifactId>
         </dependency>
 
+        <!-- ShedLock - integração com Spring Scheduler -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-spring</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
 
+        <!-- ShedLock - persistência do lock via JDBC -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-provider-jdbc-template</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
 
     </dependencies>
 
